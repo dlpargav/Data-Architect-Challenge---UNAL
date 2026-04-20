@@ -44,6 +44,27 @@ def _select_available(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return df[[c for c in cols if c in df.columns]].copy()
 
 
+def _drop_footer_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop SNIES footer rows that appear at the bottom of Excel files.
+    e.g. 'FUENTE: SNIES-MEN', 'Fecha de corte...' etc.
+    These rows have non-numeric values in codigo_de_la_institucion and
+    would cause InvalidTextRepresentation errors in Postgres.
+    """
+    if "codigo_de_la_institucion" not in df.columns:
+        return df
+    before = len(df)
+    df = df.copy()
+    df["codigo_de_la_institucion"] = pd.to_numeric(
+        df["codigo_de_la_institucion"], errors="coerce"
+    )
+    df = df.dropna(subset=["codigo_de_la_institucion"]).reset_index(drop=True)
+    dropped = before - len(df)
+    if dropped:
+        logger.info("Dropped %d SNIES footer/metadata rows (non-numeric institution code).", dropped)
+    return df
+
+
 def load_bronze_docentes(df_raw: pd.DataFrame, year: int) -> None:
     """Load raw docentes data into bronze.docentes_raw for the given year."""
     engine = get_engine()
@@ -58,8 +79,9 @@ def load_bronze_docentes(df_raw: pd.DataFrame, year: int) -> None:
     }
     df = df.rename(columns=mapping)
     
-    # 3. Select subset defined in model
+    # 3. Select subset defined in model, then strip footer rows
     df = _select_available(df, _BRONZE_COLS_DOCENTES)
+    df = _drop_footer_rows(df)
 
     with engine.begin() as conn:
         conn.execute(
@@ -96,8 +118,9 @@ def load_bronze_estudiantes(df_raw: pd.DataFrame, year: int) -> None:
     
     df = df.rename(columns=mapping)
     
-    # 3. Select subset
+    # 3. Select subset, then strip footer rows
     df = _select_available(df, _BRONZE_COLS_ESTUDIANTES)
+    df = _drop_footer_rows(df)
 
     with engine.begin() as conn:
         conn.execute(

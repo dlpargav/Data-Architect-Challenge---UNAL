@@ -14,3 +14,7 @@ data/
 .prefect/
 *.db
 *.log
+
+# Generated visualization outputs (scripts are tracked, not outputs)
+analysis/*.png
+analysis/*.jpg
