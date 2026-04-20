@@ -74,7 +74,7 @@ Portal SNIES (URL)
 
 ```bash
 # 1. Clonar el repositorio
-git clone <repo-url>
+git clone https://github.com/dlpargav/Data-Architect-Challenge---UNAL.git
 cd snies-pipeline
 
 # 2. Iniciar PostgreSQL, ejecutar Docker Desktop  y ejecutar el pipeline
