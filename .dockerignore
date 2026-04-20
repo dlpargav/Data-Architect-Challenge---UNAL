@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# uv / virtualenv
+.venv/
+*.egg-info/
+
+# Data files (large Excel/CSV — not committed to VCS)
+data/raw/
+data/processed/
+data/gold/
+
+# Environment
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
