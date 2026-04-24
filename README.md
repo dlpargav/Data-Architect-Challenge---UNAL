@@ -320,13 +320,13 @@ Para conjuntos de datos de varios millones de filas, `pandas` se convierte en un
 
 La lógica de transformación en `processing/` esta diseñada como funciones puras: cambiar la librería de DataFrames solo requiere modificar las implementaciones de las funciones, no la estructura del pipeline.
 
-### 3. Orquestacion: Airflow (gestionado) para programación a escala de equipo
+### 3. Orquestación: Airflow (gestionado) para programación a escala de equipo
 
-Con un equipo de ingenieros y multiples dominios de datos, el modelo de servidor unico de Prefect resulta limitante. Se recomienda migrar a **Apache Airflow en Cloud Composer** (GCP) o **Amazon MWAA** (AWS):
+Con un equipo de ingenieros y múltiples dominios de datos, el modelo de servidor unico de Prefect resulta limitante. Se recomienda migrar a **Apache Airflow en Cloud Composer** (GCP) o **Amazon MWAA** (AWS):
 
 - Control de acceso basado en roles para la propiedad de los DAGs.
 - Monitoreo de SLA en varios equipos.
-- Integracion nativa con almacenamiento y computo en la nube.
+- Integración nativa con almacenamiento y computo en la nube.
 
 Cada `@task` de Prefect se mapea directamente a un `PythonOperator` de Airflow, haciendo que la migración sea mecánica.
 
@@ -336,7 +336,7 @@ Agregar `departamento` a `dim_periodo` y particionar `fact_capacidad_academica` 
 
 ### 5. Catálogo de datos y gobierno
 
-A medida que crece el numero de conjuntos de datos y consumidores, se debe agregar:
+A medida que crece el número de conjuntos de datos y consumidores, se debe agregar:
 
 - **OpenMetadata** o **DataHub** para un catálogo de datos que permita búsquedas.
 - **dbt** para las transformaciones Silver -> Gold basadas en SQL, con documentación automatizada y linaje.
