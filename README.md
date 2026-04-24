@@ -235,7 +235,7 @@ Los nombres de las instituciones del SNIES son inconsistentes entre los conjunto
 | ----------------------------------- | ------ | ------------------------------------------------------ |
 | Columnas clave nulas                | Silver | Registrar advertencia, excluir fila                    |
 | Valores metricos negativos          | Silver | Registrar advertencia                                  |
-| Duplicados (institucion, anio)      | Silver | Registrar advertencia (groupby lo maneja naturalmente) |
+| Duplicados (institucion, año)      | Silver | Registrar advertencia (groupby lo maneja naturalmente) |
 | Instituciones faltantes (anti-join) | Gold   | Registrar conteo de instituciones excluidas            |
 | KPI fuera de rango [1, 200]         | Gold   | Registrar advertencia con nombres de instituciones     |
 | Columnas esperadas faltantes        | Silver | Levantar `MissingColumnError` (falla rapida)           |
