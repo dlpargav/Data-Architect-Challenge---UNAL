@@ -1,3 +1,375 @@
+# SNIES Academic Capacity Monitor
+
+> Automated end-to-end pipeline for monitoring the **student-to-faculty ratio** in Higher Education Institutions (HEIs) in Bogotá, using open data from Colombia's SNIES system.
+
+**Analysis period:** 2022 - 2024 · **Scope:** HEIs in Bogotá · **Primary metric:** `Enrolled Students / Faculty`
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          docker-compose                                     │
+│                                                                             │
+│  ┌──────────────────────────────────────┐   ┌───────────────────────────┐  │
+│  │         Pipeline Container           │   │     Prefect Server        │  │
+│  │         (Python 3.11 + uv)           │   │     UI at :4200           │  │
+│  │                                      │   │   (--profile monitoring)  │  │
+│  │  src/                                │   └───────────────────────────┘  │
+│  │  ├── ingestion/   <- download + cache│                                  │
+│  │  ├── processing/  <- cleaning, DQ    │                                  │
+│  │  ├── loading/     <- DB writes       │                                  │
+│  │  └── orchestration/ <- Prefect flow  │                                  │
+│  └───────────────┬──────────────────────┘                                  │
+│                  │ SQLAlchemy + psycopg2                                    │
+│                  ▼                                                          │
+│  ┌───────────────────────────────────────┐                                  │
+│  │           PostgreSQL 16               │  <- port 5432 (Tableau)         │
+│  │                                       │                                  │
+│  │  bronze.docentes_raw                  │                                  │
+│  │  bronze.estudiantes_raw               │                                  │
+│  │                                       │                                  │
+│  │  gold.dim_institucion  (+ is_sue flag)│                                  │
+│  │  gold.dim_periodo                     │                                  │
+│  │  gold.fact_capacidad_academica        │                                  │
+│  └───────────────────────────────────────┘                                  │
+│                                                                             │
+│  External: Tableau Desktop -> localhost:5432 -> gold schema                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow (Medallion Architecture)
+
+```
+SNIES Portal (URL)
+       │
+       ▼  [cache: data/raw/]
+   BRONZE  <--- Raw Excel/CSV files, 1:1 copy + ingestion_timestamp
+       │
+       ▼  [normalization · Bogotá filter · data quality (DQ) checks]
+   SILVER  <--- Clean, typed, and validated DataFrames (in memory)
+       │
+       ▼  [joins · KPI calculation · SUE classification · upsert]
+    GOLD   <--- Star schema: dim_institucion · dim_periodo · fact_capacidad_academica
+       │
+       ▼
+  Tableau Desktop (direct connection to gold schema in PostgreSQL)
+```
+
+---
+
+## Installation and Execution
+
+### Prerequisites
+
+| Tool            | Version    | Purpose                    |
+| --------------- | ---------- | -------------------------- |
+| Docker Desktop  | >= 4.x     | Runs all services          |
+| Tableau Desktop | Any        | BI visualization           |
+
+---
+
+### Docker Deployment (Fully Reproducible)
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/dlpargav/Data-Architect-Challenge---UNAL.git
+cd snies-pipeline
+
+# 2. Start PostgreSQL, run Docker Desktop, and execute the pipeline
+docker compose up --build
+
+# 3. (Optional) Run with the Prefect monitoring UI at http://localhost:4200
+docker compose --profile monitoring up --build
+
+# 4. Re-run for a specific year only (incremental load)
+docker compose run pipeline python -m src.pipeline.main --years 2024
+```
+
+**What happens on the first run:**
+
+1. PostgreSQL starts and creates the `bronze`, `silver`, and `gold` schemas.
+2. The pipeline downloads the SNIES files (skips this step if already cached in `data/raw/`).
+3. Raw data is loaded into the `bronze.*` tables.
+4. Data is cleaned, filtered for Bogotá, and run through data quality (DQ) checks.
+5. The gold star schema is built with the `relacion_estudiantes_por_docente` KPI and the `es_sue` indicator.
+
+---
+
+### Adding a New Period
+
+To include a new year (e.g. 2025):
+
+1. Open `src/utils/config.py`.
+2. Add a new entry to `SNIES_FILES`:
+
+```python
+2025: {
+    "docentes": {
+        "url": "https://snies.mineducacion.gov.co/1778/articles-XXXXX_recurso.xlsx",
+        "local_name": "Docentes 2025.xlsx",
+        "skiprows": 5,
+        "sheet_name": "1.",
+    },
+    "estudiantes": {
+        "url": "https://snies.mineducacion.gov.co/1778/articles-XXXXX_recurso_2.xlsx",
+        "local_name": "Estudiantes 2025.xlsx",
+        "skiprows": 5,
+        "sheet_name": "1.",
+    },
+},
+```
+
+3. Run: `docker compose run pipeline python -m src.pipeline.main --years 2025`
+
+No other code changes are required.
+
+---
+
+## Tableau Connection
+
+| Parameter | Value       |
+| --------- | ----------- |
+| Server    | `localhost` |
+| Port      | `5432`      |
+| Database  | `snies_db`  |
+| User      | `snies`     |
+| Password  | `snies`     |
+| Schema    | `gold`      |
+
+**Recommended initial view** — paste this into Tableau's Custom SQL:
+
+```sql
+SELECT
+    f.id,
+    i.nombre_institucion,
+    i.es_sue,
+    p.ano,
+    p.semestre,
+    f.total_estudiantes_matriculados,
+    f.total_docentes,
+    f.relacion_estudiantes_por_docente
+FROM gold.fact_capacidad_academica f
+JOIN gold.dim_institucion i ON i.codigo_institucion = f.codigo_institucion
+JOIN gold.dim_periodo     p ON p.id_periodo         = f.id_periodo
+ORDER BY p.ano, i.nombre_institucion;
+```
+
+---
+
+## Verification Queries
+
+After running the pipeline, validate the output with:
+
+```sql
+-- 1. Row count by year (should have data for 2022, 2023, 2024)
+SELECT p.ano, COUNT(*) AS instituciones
+FROM gold.fact_capacidad_academica f
+JOIN gold.dim_periodo p ON p.id_periodo = f.id_periodo
+GROUP BY p.ano ORDER BY p.ano;
+
+-- 2. SUE institutions (should include ~5 universities in Bogotá)
+SELECT nombre_institucion, es_sue
+FROM gold.dim_institucion
+WHERE es_sue = TRUE ORDER BY nombre_institucion;
+
+-- 3. KPI verification (flags outliers outside the [1, 200] range)
+SELECT i.nombre_institucion, p.ano, f.relacion_estudiantes_por_docente
+FROM gold.fact_capacidad_academica f
+JOIN gold.dim_institucion i ON i.codigo_institucion = f.codigo_institucion
+JOIN gold.dim_periodo p ON p.id_periodo = f.id_periodo
+WHERE f.relacion_estudiantes_por_docente < 1
+   OR f.relacion_estudiantes_por_docente > 200;
+
+-- 4. Top 10 institutions by student-to-faculty ratio (latest year)
+SELECT i.nombre_institucion, i.es_sue, f.relacion_estudiantes_por_docente
+FROM gold.fact_capacidad_academica f
+JOIN gold.dim_institucion i ON i.codigo_institucion = f.codigo_institucion
+JOIN gold.dim_periodo p ON p.id_periodo = f.id_periodo
+WHERE p.ano = (SELECT MAX(ano) FROM gold.dim_periodo)
+ORDER BY f.relacion_estudiantes_por_docente DESC
+LIMIT 10;
+```
+
+---
+
+## Technical Decisions
+
+### Why Medallion Architecture (Bronze / Silver / Gold)?
+
+A flat pipeline that reads -> transforms -> writes in a single pass has no traceability and cannot be partially re-executed. The medallion pattern provides:
+
+- **Bronze**: raw data exactly as published by SNIES, with timestamps. If a bug is found in the cleaning logic, raw data never needs to be re-downloaded.
+- **Silver**: where cleaning and quality checks (DQ) happen. This is the layer the data team uses for debugging.
+- **Gold**: the only layer BI tools touch. Pre-calculated KPIs prevent Tableau from running expensive divisions at query time.
+
+### Why Prefect Instead of Apache Airflow?
+
+| Factor                     | Prefect                               | Airflow                                             |
+| -------------------------- | ------------------------------------- | --------------------------------------------------- |
+| Docker services required   | 1 (optional server)                   | 4 (webserver + scheduler + worker + metadata DB)    |
+| Code model                 | Pure Python `@task` / `@flow`         | DAG DSL + operators                                 |
+| Retries                    | `@task(retries=3)`                    | Operator-level configuration                        |
+| Task caching               | Built-in (24h cache on downloads)     | Requires XCom + custom logic                        |
+| Learning curve             | Low                                   | Medium-High                                         |
+| Production suitability     | Teams < ~10 DEs                       | Enterprise / multi-team                             |
+
+For this project's scope, Prefect is the right tool. The **migration path to Airflow** is straightforward: each `@task` maps 1:1 to a `PythonOperator`, and the `@flow` maps to a DAG with its `schedule_interval`.
+
+### Why `uv` Instead of `pip` or Poetry?
+
+`uv` is a Rust-based package manager that resolves and installs dependencies ~10-100x faster than pip. The `uv.lock` file pins exact versions for reproducibility, and the `Dockerfile` uses the official `ghcr.io/astral-sh/uv` base image — no pip needed inside the container at all.
+
+### Why Config-Driven Ingestion?
+
+SNIES changes its file formats and URLs between publications. Centralizing all year-specific parameters in `config.py` means adding a new year requires no code changes — just a config entry. The per-file `skiprows` parameter handles header variability across years.
+
+### Why ID-Based Joins?
+
+SNIES institution names are inconsistent across datasets (`"UNIVERSIDAD NACIONAL DE COLOMBIA"` vs. `"Universidad Nacional"` vs. `"Univ. Nacional"`). Joining through `codigo_de_la_institucion` (the SNIES numeric ID) is deterministic and immune to name formatting differences. Name standardization is applied only for display purposes.
+
+### Data Quality (DQ) Strategy
+
+| Check                              | Layer  | Action                                                |
+| ---------------------------------- | ------ | ----------------------------------------------------- |
+| Null key columns                   | Silver | Log warning, exclude row                              |
+| Negative metric values             | Silver | Log warning                                           |
+| Duplicates (institution, year)     | Silver | Log warning (groupby handles it naturally)            |
+| Missing institutions (anti-join)   | Gold   | Log excluded institution count                        |
+| KPI out of range [1, 200]          | Gold   | Log warning with institution names                    |
+| Missing expected columns           | Silver | Raise `MissingColumnError` (fail fast)                |
+
+Set the `STRICT_DQ=true` environment variable to turn warnings into pipeline failures — recommended for CI processes.
+
+---
+
+## Project Structure
+
+```
+snies-pipeline/
+│
+├── src/
+│   ├── ingestion/
+│   │   └── loader.py           <- download with cache, xlsx/csv detection
+│   ├── processing/
+│   │   ├── cleaning.py         <- column normalization + schema validation
+│   │   ├── aggregation.py      <- Bogotá filter + grouping (flexible by semester)
+│   │   ├── docentes.py         <- Silver transformation for faculty data
+│   │   ├── estudiantes.py      <- Silver transformation for enrollment data
+│   │   ├── data_quality.py     <- DQ validations (nulls, duplicates, ranges, anti-join)
+│   │   └── sue_classifier.py   <- SUE indicator via normalized matching
+│   ├── loading/
+│   │   ├── models.py           <- SQLAlchemy ORM (Bronze + Gold star schema)
+│   │   ├── database.py         <- DB engine singleton + schema initialization
+│   │   ├── bronze_loader.py    <- Raw data persistence
+│   │   └── gold_builder.py     <- Star schema upsert + KPI calculation
+│   ├── orchestration/
+│   │   └── flows.py            <- Prefect @flow + @task definitions
+│   ├── pipeline/
+│   │   └── main.py             <- CLI entry point (--years argument)
+│   └── utils/
+│       └── config.py           <- SNIES URLs, DB config, column contracts
+│
+├── data/
+│   ├── raw/                    <- Downloaded SNIES files (cache)
+│   ├── processed/              <- (reserved for future CSV exports)
+│   └── gold/                   <- (reserved for future Parquet exports)
+│
+├── Dockerfile                  <- Multi-stage build with uv
+├── docker-compose.yaml         <- PostgreSQL + pipeline + Prefect (optional)
+├── init.sql                    <- PostgreSQL schema bootstrap
+├── pyproject.toml              <- uv project manifest
+├── uv.lock                     <- Pinned dependency versions
+└── README.md
+```
+
+---
+
+## Knowledge Transfer: Scaling to Nationwide
+
+> This section answers the question: _"How would you scale this solution if we had to integrate data from the entire country?"_
+
+### Current State vs. National Scale
+
+| Dimension             | Current (Bogotá, 3 years)  | National (all departments, all years) |
+| --------------------- | -------------------------- | ------------------------------------- |
+| Institutions          | ~100                       | ~400+                                 |
+| Records / file        | ~50K rows                  | ~2M+ rows                            |
+| Files / year          | 2                          | 2                                     |
+| Total data volume     | < 100 MB                   | Several GB per year                   |
+
+At national scale, the current architecture requires the following improvements:
+
+### 1. Storage: Parquet + Object Storage Instead of Local Filesystem
+
+Replace `data/raw/` with S3-compatible object storage (AWS S3, Google Cloud Storage, or MinIO for self-hosted environments). Store raw files as Parquet partitioned by `(year, department)`:
+
+```
+s3://snies-data/bronze/docentes/year=2024/departamento=cundinamarca/*.parquet
+```
+
+This enables predicate pushdown: downstream tools only scan the partitions they need.
+
+### 2. Processing: Polars or PySpark Instead of pandas
+
+For multi-million row datasets, `pandas` becomes a bottleneck (single-threaded, in-memory). Recommended migration to:
+
+- **Polars**: Drop-in pandas replacement, 10-20x faster, lazy evaluation.
+- **PySpark**: For datasets exceeding single-machine RAM (distribution across a cluster).
+
+The transformation logic in `processing/` is designed as pure functions: changing the DataFrame library only requires modifying function implementations, not the pipeline structure.
+
+### 3. Orchestration: Managed Airflow for Team-Scale Scheduling
+
+With a team of engineers and multiple data domains, Prefect's single-server model becomes limiting. Recommended migration to **Apache Airflow on Cloud Composer** (GCP) or **Amazon MWAA** (AWS):
+
+- Role-based access control for DAG ownership.
+- Cross-team SLA monitoring.
+- Native integration with cloud storage and compute.
+
+Each Prefect `@task` maps directly to an Airflow `PythonOperator`, making the migration mechanical.
+
+### 4. Data Modeling: Partition the Gold Layer by `department`
+
+Add `departamento` to `dim_periodo` and partition `fact_capacidad_academica` by it. Native PostgreSQL partitioning (or a columnar store like ClickHouse/BigQuery) keeps query speed high even at national scale.
+
+### 5. Data Catalog and Governance
+
+As the number of datasets and consumers grows, add:
+
+- **OpenMetadata** or **DataHub** for a searchable data catalog.
+- **dbt** for SQL-based Silver -> Gold transformations, with automated documentation and lineage.
+- **Great Expectations** for more advanced data quality (DQ) validations beyond the current in-code checks.
+
+### 6. CI/CD for Pipeline Validation
+
+Add a GitHub Actions workflow that:
+
+1. Runs `uv sync --frozen` (dependency audit).
+2. Runs unit tests with `STRICT_DQ=true` against a sample dataset.
+3. Validates that `docker compose build` completes successfully on each Pull Request.
+
+```yaml
+# .github/workflows/pipeline-ci.yml
+on: [push, pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --frozen
+      - run: docker compose build pipeline
+```
+
+---
+---
+
+# 🇪🇸 Versión en Español
+
+---
+
 # Monitor de Capacidad Académica SNIES
 
 > Pipeline automatizado end-to-end para el monitoreo de la **relación estudiante-docente** en las Instituciones de Educación Superior (IES) de Bogotá, utilizando datos abiertos del sistema SNIES de Colombia.
